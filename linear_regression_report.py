@@ -201,6 +201,13 @@ def residual_diagnostics(res: Dict, X: pd.DataFrame, y: pd.Series) -> Dict:
 def save_tables(outputs_dir, res: Dict, vif_df, diag, df_model, y_name, x_names):
     # Коефіцієнти з CI
     coef_df = res["coefficients"].copy()
+    # Додаємо позначки значущості та сортуємо за p-value (крім NaN униз)
+    coef_df["sig"] = np.select(
+        [coef_df["p_value"] < 0.001, coef_df["p_value"] < 0.01, coef_df["p_value"] < 0.05],
+        ["***", "**", "*"],
+        default=""
+    )
+    coef_df = coef_df.sort_values(["p_value"], na_position="last")
     coef_df.to_csv(outputs_dir/"coefficients.csv", index=False)
 
     # Узагальнені метрики
@@ -236,6 +243,33 @@ def save_tables(outputs_dir, res: Dict, vif_df, diag, df_model, y_name, x_names)
         )
         f.write("Coefficients:\n")
         f.write(coef_df.to_string(index=False))
+
+    # Впливові спостереження: leverage та Cook's D
+    X_mat = res["X"].values.astype(float)
+    XtX = X_mat.T @ X_mat
+    XtX_inv = np.linalg.pinv(XtX)
+    H = X_mat @ XtX_inv @ X_mat.T
+    leverage = np.clip(np.diag(H), 0.0, 1.0)
+    p = X_mat.shape[1]
+    # Використовуємо дисперсію залишків з моделі
+    sigma2 = res.get("sigma2", float(np.var(res["resid"], ddof=p)))
+    cooks_d = (res["resid"]**2 / (p * sigma2)) * (leverage / (1.0 - leverage)**2)
+    pd.DataFrame({"leverage": leverage, "cooks_d": cooks_d}).to_csv(outputs_dir/"influence.csv", index=False)
+
+    # Рівняння моделі у зручному вигляді
+    try:
+        const_val = float(coef_df.loc[coef_df.term == "const", "coef"].values[0]) if (coef_df.term == "const").any() else 0.0
+    except Exception:
+        const_val = 0.0
+    terms = []
+    for _, row in coef_df.iterrows():
+        if row["term"] == "const":
+            continue
+        terms.append(f"{row['coef']:.4g}*{row['term']}")
+    eq = f"{const_val:.4g}"
+    if terms:
+        eq += " + " + " + ".join(terms)
+    (outputs_dir/"model_equation.txt").write_text(eq, encoding="utf-8")
 
 def save_plots(outputs_dir, diag, y, X, y_name):
     # 1) y vs fitted
@@ -273,7 +307,7 @@ def save_plots(outputs_dir, diag, y, X, y_name):
     plt.savefig(outputs_dir/"plot_residuals_qq.png", bbox_inches="tight")
     plt.close()
 
-def write_markdown_report(outputs_dir, csv_path, y_name, x_names, res, diag):
+def write_markdown_report(outputs_dir, csv_path, y_name, x_names, res, diag, vif_df=None):
     md = []
     md.append("# Комп’ютерний практикум №2 — Лінійний регресійний аналіз\n")
     md.append("**Мета:** побудувати лінійну регресійну модель та оцінити її якість.\n")
@@ -291,6 +325,18 @@ def write_markdown_report(outputs_dir, csv_path, y_name, x_names, res, diag):
     md.append(f"- Shapiro–Wilk p={sw:.3g} (нормальність залишків {'не відхиляється' if (not np.isnan(sw) and sw>=0.05) else 'відхиляється'})")
     md.append(f"- Durbin–Watson={diag['durbin_watson']:.3f} (≈2 бажано)")
     md.append(f"- Breusch–Pagan p={bp:.3g} (гомоскедастичність {'ок' if bp>=0.05 else 'порушена'})\n")
+
+    # VIF попередження (якщо доступний vif_df)
+    if vif_df is not None and not vif_df.empty:
+        try:
+            high_vif = vif_df[vif_df["VIF"] > 10]
+            if not high_vif.empty:
+                md.append("## Попередження щодо мультиколінеарності")
+                md.append("Виявлено предиктори з VIF > 10 (можлива сильна мультиколінеарність):")
+                md.extend([f"- `{row.variable}`: VIF={row.VIF:.2f}" for _, row in high_vif.iterrows()])
+                md.append("")
+        except Exception:
+            pass
 
     md.append("## Графіки")
     md.append("- `plot_observed_vs_fitted.png` — спостережені значення vs передбачені")
@@ -327,7 +373,7 @@ def main():
     diag = residual_diagnostics(res, X, y)
     save_tables(out_dir, res, vif_df, diag, df_model, y_name, x_names)
     save_plots(out_dir, diag, y, X, y_name)
-    write_markdown_report(out_dir, args.csv, y_name, x_names, res, diag)
+    write_markdown_report(out_dir, args.csv, y_name, x_names, res, diag, vif_df)
 
     print("\n=== Готово! Результати збережено у:", out_dir.resolve(), "===\n")
     print("Файли:")
