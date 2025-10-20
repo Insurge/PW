@@ -70,13 +70,14 @@ def make_design_matrices(df, y_name, x_names):
 
     return df_model, y, X
 
-def fit_ols(y: pd.Series, X: pd.DataFrame) -> Dict:
+def fit_ols(y: pd.Series, X: pd.DataFrame, robust: bool = False) -> Dict:
     # Аналітичне розв'язання OLS: beta = (X'X)^{-1} X'y
     X_mat = X.values.astype(float)
     y_vec = y.values.astype(float)
 
     XtX = X_mat.T @ X_mat
-    XtX_inv = np.linalg.inv(XtX)
+    # Використовуємо псевдоінверсію для стійкості
+    XtX_inv = np.linalg.pinv(XtX)
     Xty = X_mat.T @ y_vec
     beta = XtX_inv @ Xty
 
@@ -93,7 +94,12 @@ def fit_ols(y: pd.Series, X: pd.DataFrame) -> Dict:
 
     df_resid = n - p
     sigma2 = rss / df_resid if df_resid > 0 else np.nan
-    cov_beta = sigma2 * XtX_inv
+    # Коваріаційна матриця: класична або робастна (HC0)
+    if robust and df_resid > 0:
+        W = np.diag(resid ** 2)
+        cov_beta = XtX_inv @ (X_mat.T @ W @ X_mat) @ XtX_inv
+    else:
+        cov_beta = sigma2 * XtX_inv
     se_beta = np.sqrt(np.diag(cov_beta))
 
     # t-статистики та p-значення
@@ -137,6 +143,8 @@ def fit_ols(y: pd.Series, X: pd.DataFrame) -> Dict:
         "fittedvalues": fitted,
         "resid": resid,
         "X": X,
+        "sigma2": sigma2,
+        "robust": robust,
     }
 
 def compute_vif(X: pd.DataFrame) -> pd.DataFrame:
@@ -169,8 +177,9 @@ def residual_diagnostics(res: Dict, X: pd.DataFrame, y: pd.Series) -> Dict:
     diff_resid = np.diff(resid)
     dw = float((diff_resid @ diff_resid) / (resid @ resid)) if float(resid @ resid) > 0 else np.nan
 
-    # Breusch–Pagan: aux регресія e^2 на X (включаючи константу). LM = n * R^2, df = k (без константи)
-    e2 = resid ** 2
+    # Breusch–Pagan: aux регресія (e^2 / sigma2) на X (включаючи константу). LM = n * R^2, df = k (без константи)
+    sigma2 = res.get("sigma2", np.nan)
+    e2 = (resid ** 2) / sigma2 if (isinstance(sigma2, (int, float)) and sigma2 > 0) else (resid ** 2)
     X_aux = X.values.astype(float)
     beta_aux = np.linalg.lstsq(X_aux, e2, rcond=None)[0]
     fitted_aux = X_aux @ beta_aux
@@ -304,6 +313,7 @@ def main():
     parser.add_argument("--y", type=str, default=None, help="Ім'я залежної змінної (Y).")
     parser.add_argument("--X", nargs="*", default=None, help="Список незалежних змінних (X). Якщо не задано — всі, окрім Y.")
     parser.add_argument("--outputs", type=str, default="outputs", help="Папка для результатів (за замовчуванням 'outputs').")
+    parser.add_argument("--robust", action="store_true", help="Робастні стандартні похибки (HC0).")
     args = parser.parse_args()
 
     out_dir = ensure_outputs_dir(args.outputs)
@@ -311,7 +321,7 @@ def main():
     df, y_name, x_names = load_or_make_data(args.csv, args.y, args.X)
     df_model, y, X = make_design_matrices(df, y_name, x_names)
 
-    res = fit_ols(y, X)
+    res = fit_ols(y, X, robust=args.robust)
     vif_df = compute_vif(X)
 
     diag = residual_diagnostics(res, X, y)
