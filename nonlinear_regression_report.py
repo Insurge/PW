@@ -181,11 +181,28 @@ def plot_models(outdir, x, y, results, title):
 
 def write_report(outdir, name, table, best_row):
     lines = []
-    lines.append("# Комп’ютерний практикум №3 — Нелінійний регресійний аналіз\n")
+    lines.append("# Комп'ютерний практикум №3 — Нелінійний регресійний аналіз\n")
     lines.append(f"**Дані:** {name}\n")
     lines.append("## Порівняння моделей")
-    lines.append(table.to_csv(index=False))
-    lines.append("## Найкраща модель")
+    
+    # Convert DataFrame to markdown table
+    lines.append("| " + " | ".join(table.columns) + " |")
+    lines.append("| " + " | ".join(["---"] * len(table.columns)) + " |")
+    for _, row in table.iterrows():
+        row_values = []
+        for col in table.columns:
+            if col in ['r2', 'adj_r2', 'rmse', 'mae']:
+                row_values.append(f"{row[col]:.4f}")
+            elif col in ['a', 'b', 'c', 'd']:
+                if pd.isna(row[col]):
+                    row_values.append("—")
+                else:
+                    row_values.append(f"{row[col]:.4f}")
+            else:
+                row_values.append(str(row[col]))
+        lines.append("| " + " | ".join(row_values) + " |")
+    
+    lines.append("\n## Найкраща модель")
     lines.append(f"- За Adj.R²: **{best_row['model']}**, Adj.R²={best_row['adj_r2']:.4f}, RMSE={best_row['rmse']:.4f}, MAE={best_row['mae']:.4f}\n")
     (outdir/f"report_draft_{name}.md").write_text("\n".join(lines), encoding="utf-8")
 
